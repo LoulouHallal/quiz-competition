@@ -1,0 +1,170 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Quiz Competition</title>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body{font:14px/1.45 Segoe UI,Arial,sans-serif;margin:0;background:#0f172a;color:#e5e7eb}
+    header{padding:12px 14px;border-bottom:1px solid #253248;display:flex;justify-content:space-between;align-items:center}
+    main{padding:14px}
+    .tabs{display:flex;gap:4px;margin-bottom:12px}
+    .tab{padding:8px 16px;background:#1e293b;border-radius:8px 8px 0 0;cursor:pointer;border:1px solid #334155;border-bottom:none}
+    .tab.active{background:#111827;color:#22d3ee}
+    .tab-content{display:none}
+    .tab-content.active{display:block}
+    .row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+    .card{background:#111827;border:1px solid #253248;border-radius:12px;padding:12px;margin:10px 0}
+    button{background:#22d3ee;color:#0b1220;border:0;border-radius:10px;padding:10px 12px;font-weight:700;cursor:pointer}
+    button:disabled{opacity:0.5;cursor:not-allowed}
+    button.sec{background:#0b1220;color:#e5e7eb;border:1px solid #334155}
+    button.danger{background:#ef4444;color:#fff}
+    input,textarea,select{width:100%;padding:8px;border-radius:8px;border:1px solid #374151;background:#0b1220;color:#e5e7eb;margin-bottom:8px}
+    label{display:block;margin:8px 0 4px;font-size:13px;color:#9ca3af}
+    small{color:#9ca3af}
+    .code-display{font-size:48px;font-weight:700;text-align:center;color:#22d3ee;padding:20px;background:#0b1220;border-radius:12px;margin:12px 0;letter-spacing:8px}
+    .qr-container{text-align:center;margin:12px 0}
+    .qr-container img{max-width:200px;border-radius:8px}
+    .participant-list{max-height:200px;overflow-y:auto;font-size:13px}
+    .participant-item{padding:8px;background:#0b1220;border-radius:6px;margin:4px 0;display:flex;justify-content:space-between;align-items:center}
+    .leaderboard{max-height:300px;overflow-y:auto}
+    .leaderboard-item{padding:8px;background:#0b1220;border-radius:6px;margin:4px 0;display:flex;justify-content:space-between;align-items:center}
+    .rank{width:32px;height:32px;background:#22d3ee;color:#0b1220;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;margin-right:8px}
+    .stats-bar{height:24px;background:#1e293b;border-radius:6px;overflow:hidden;margin:8px 0}
+    .stats-fill{height:100%;background:#10b981;transition:width 0.3s}
+    #login-screen{display:block}
+    #app-body{display:none}
+    .hidden{display:none}
+  </style>
+</head>
+<body>
+  <header>
+    <strong>🎯 Quiz Competition</strong>
+    <button id="btnLogout" class="sec" style="padding:6px 12px;display:none" onclick="qc.logout()">Logout</button>
+  </header>
+
+  <!-- Login Screen -->
+  <section id="login-screen" class="card" style="margin:20px 14px">
+    <h3>Teacher Login</h3>
+    <label>Email</label>
+    <input type="email" id="loginEmail" placeholder="teacher@demo.com" value="teacher@demo.com">
+    <label>Password</label>
+    <input type="password" id="loginPassword" placeholder="password" value="demo123">
+    <button onclick="qc.login()" style="margin-top:12px">Login</button>
+    <div id="loginError" style="color:#ef4444;margin-top:8px;display:none"></div>
+  </section>
+
+  <!-- Main App -->
+  <main id="app-body">
+    <div class="tabs">
+      <div class="tab active" onclick="qc.switchTab('author')">Author</div>
+      <div class="tab" onclick="qc.switchTab('live')">Live</div>
+    </div>
+
+    <!-- Author Tab -->
+    <div id="tab-author" class="tab-content active">
+      <div class="card">
+        <h4 style="margin:0 0 8px">Quiz Setup</h4>
+        <label>Quiz Title</label>
+        <input type="text" id="quizTitle" placeholder="My Quiz">
+        <button onclick="qc.createQuiz()">Create New Quiz</button>
+        <button class="sec" onclick="qc.loadQuizzes()">Load Existing</button>
+        <div><small id="quizStatus">No quiz selected</small></div>
+      </div>
+
+      <div class="card">
+        <h4 style="margin:0 0 8px">Add Question to Current Slide</h4>
+        <label>Question Title</label>
+        <textarea id="questionTitle" rows="2" placeholder="What is...?"></textarea>
+        <label>Options (A-F, min 2, max 6)</label>
+        <input type="text" id="optionA" placeholder="Option A">
+        <input type="text" id="optionB" placeholder="Option B">
+        <input type="text" id="optionC" placeholder="Option C">
+        <input type="text" id="optionD" placeholder="Option D">
+        <input type="text" id="optionE" placeholder="Option E (optional)">
+        <input type="text" id="optionF" placeholder="Option F (optional)">
+        <label>Correct Answer</label>
+        <select id="correctAnswer">
+          <option value="0">A</option>
+          <option value="1">B</option>
+          <option value="2">C</option>
+          <option value="3">D</option>
+          <option value="4">E</option>
+          <option value="5">F</option>
+        </select>
+        <label>Timer (seconds)</label>
+        <input type="number" id="timerSeconds" value="30" min="15" max="120">
+        <button onclick="qc.saveQuestion()">Save to Slide</button>
+      </div>
+
+      <div class="card">
+        <h4 style="margin:0 0 8px">Questions in Quiz</h4>
+        <button class="sec" onclick="qc.syncQuestions()">Sync from Slides</button>
+        <div id="questionsList" style="max-height:200px;overflow:auto;font-size:12px;margin-top:8px"></div>
+      </div>
+    </div>
+
+    <!-- Live Tab -->
+    <div id="tab-live" class="tab-content">
+      <div id="lobby-view">
+        <div class="card">
+          <h4 style="margin:0 0 12px">Start Quiz Session</h4>
+          <button onclick="qc.startSession()" id="btnStartSession">Start Quiz</button>
+        </div>
+      </div>
+
+      <div id="session-view" class="hidden">
+        <div class="card">
+          <h4 style="margin:0 0 8px">Session Code</h4>
+          <div class="code-display" id="sessionCode">------</div>
+          <div class="qr-container">
+            <img id="qrImage" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="QR Code" style="display:none">
+          </div>
+          <button class="sec" onclick="qc.insertQR()">Insert QR to Slide</button>
+          <button class="danger" onclick="qc.endSession()">End Quiz</button>
+        </div>
+
+        <div class="card">
+          <h4 style="margin:0 0 8px">Participants (<span id="participantCount">0</span>)</h4>
+          <div class="participant-list" id="participantList"></div>
+        </div>
+
+        <div class="card">
+          <h4 style="margin:0 0 8px">Question Control</h4>
+          <button onclick="qc.nextQuestion()" id="btnNext">Next Question</button>
+          <button class="sec" onclick="qc.lockQuestion()" id="btnLock" disabled>Lock Question</button>
+          <div style="margin-top:8px">
+            <small>Current: <span id="currentQuestion">None</span></small>
+          </div>
+        </div>
+
+        <div class="card">
+          <h4 style="margin:0 0 8px">Live Stats</h4>
+          <div>Responses: <strong id="responseCount">0</strong></div>
+          <div>Correct: <strong id="correctCount">0</strong> (<span id="correctPercent">0</span>%)</div>
+          <div class="stats-bar">
+            <div class="stats-fill" id="statsFill" style="width:0%"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h4 style="margin:0 0 8px">Leaderboard (Top 10)</h4>
+          <div class="leaderboard" id="leaderboard"></div>
+        </div>
+
+        <div class="card">
+          <h4 style="margin:0 0 8px">Results</h4>
+          <button class="sec" onclick="qc.viewSummary()">View Summary</button>
+          <button class="sec" onclick="qc.exportCSV()">Export CSV</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="taskpane.js?v=20"></script>
+</body>
+</html>
