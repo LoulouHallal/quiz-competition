@@ -53,8 +53,10 @@ var state = {
   currentQuestionIndex: -1,
   socket: null,
   qrDataUrl: null,
-  slideQuestionMap: {} // slideId -> questionId
+  slideQuestionMap: {},
+  showCorrectAnswer: false  // NEW: Track if correct answer is revealed
 };
+
 
 // ============================================================================
 // Utilities
@@ -256,17 +258,86 @@ function createQuiz() {
 }
 
 function loadQuizzes() {
+  toast("Loading quizzes...");
+  
   apiCall("/api/quizzes").then(function (quizzes) {
-    if (quizzes.length > 0) {
-      state.currentQuiz = {
-        id: quizzes[0].course_id,
-        title: quizzes[0].course_name
-      };
-      el("quizStatus").textContent = "Quiz: " + quizzes[0].course_name + " (ID: " + quizzes[0].course_id + ")";
-      loadQuestions();
+    if (!quizzes || quizzes.length === 0) {
+      toast("No quizzes found. Create a new quiz to get started.", "error");
+      return;
     }
+    
+    // Create a modal to select a quiz
+    var modal = document.createElement("div");
+    modal.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;";
+    
+    var content = document.createElement("div");
+    content.style.cssText = "background:#111827;border-radius:12px;padding:24px;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,0.3);border:1px solid #253248;";
+    
+    var html = "<h3 style='margin:0 0 16px;color:#22d3ee;'>Select Quiz to Load</h3>";
+    html += "<div style='max-height:300px;overflow-y:auto;margin-bottom:16px;'>";
+    
+    for (var i = 0; i < quizzes.length; i++) {
+      var quiz = quizzes[i];
+      var quizId = quiz.course_id || quiz.id;
+      var quizName = quiz.course_name || quiz.title;
+      var qCount = quiz.questions ? quiz.questions.length : 0;
+      
+      html += "<div class='quiz-option' data-quiz-id='" + quizId + "' data-quiz-name='" + quizName.replace(/'/g, "&apos;") + "' ";
+      html += "style='padding:12px;background:#0b1220;border:1px solid #334155;border-radius:8px;margin-bottom:8px;cursor:pointer;' ";
+      html += "onmouseover=\"this.style.background='#1e293b'\" ";
+      html += "onmouseout=\"this.style.background='#0b1220'\">";
+      html += "<div style='color:#22d3ee;font-weight:600;'>" + quizName + "</div>";
+      html += "</div>";
+    }
+    
+    html += "</div>";
+    html += "<button id='closeQuizModal' style='width:100%;padding:10px;background:#334155;color:#e5e7eb;border:none;border-radius:6px;cursor:pointer;font-weight:600;'>Cancel</button>";
+    
+    content.innerHTML = html;
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    
+    // Add click handlers to quiz options
+    var quizOptions = modal.querySelectorAll('.quiz-option');
+    for (var j = 0; j < quizOptions.length; j++) {
+      (function(option) {
+        option.onclick = function() {
+          var quizId = parseInt(this.getAttribute('data-quiz-id'));
+          var quizName = this.getAttribute('data-quiz-name');
+          
+          state.currentQuiz = {
+            id: quizId,
+            title: quizName
+          };
+          
+          el("quizStatus").textContent = "Quiz: " + quizName + " (ID: " + quizId + ")";
+          toast("Loaded quiz: " + quizName);
+          
+          if (modal.parentNode) {
+            modal.parentNode.removeChild(modal);
+          }
+          
+          loadQuestions();
+        };
+      })(quizOptions[j]);
+    }
+    
+    document.getElementById('closeQuizModal').onclick = function() {
+      if (modal.parentNode) {
+        modal.parentNode.removeChild(modal);
+      }
+    };
+    
+    modal.onclick = function(e) {
+      if (e.target === modal) {
+        if (modal.parentNode) {
+          modal.parentNode.removeChild(modal);
+        }
+      }
+    };
+    
   }).catch(function (err) {
-    console.error(err);
+    toast(err.message || "Failed to load quizzes", "error");
   });
 }
 
@@ -481,6 +552,8 @@ function updateParticipantList() {
 }
 
 function updateStats(data) {
+  console.log("Stats update received:", data); // DEBUG
+  
   el("responseCount").textContent = data.totalResponses || 0;
   el("correctCount").textContent = data.correctCount || 0;
   
@@ -488,9 +561,171 @@ function updateStats(data) {
   el("correctPercent").textContent = percent;
   el("statsFill").style.width = percent + "%";
   
+  // Display answer distribution chart
+  console.log("answerStats:", data.answerStats); // DEBUG
+  console.log("correctIndex:", data.correctIndex); // DEBUG
+  
+  if (data.answerStats && Array.isArray(data.answerStats) && data.answerStats.length > 0) {
+    displayAnswerChart(data.answerStats, data.correctIndex);
+  } else {
+    // DEBUG: Show what data we're actually getting
+    var debugMsg = "No answerStats data. Received: " + JSON.stringify(data).substring(0, 200);
+    console.warn(debugMsg);
+    var chartContainer = el("answerChart");
+    if (chartContainer && chartContainer.style.display !== "none") {
+      chartContainer.innerHTML = "<div style='color:#fca5a5;padding:12px;border:1px solid #ef4444;border-radius:6px;font-size:11px;'><strong>Debug:</strong> " + debugMsg + "</div>";
+    }
+  }
+  
   if (data.leaderboard) {
     updateLeaderboard(data.leaderboard);
   }
+}
+function toggleChart() {
+  var chartContainer = el("answerChart");
+  var button = document.querySelector("button[onclick='qc.toggleChart()']");
+  
+  if (!chartContainer) return;
+  
+  var isHidden = chartContainer.style.display === "none";
+  
+  if (isHidden) {
+    chartContainer.style.display = "block";
+    button.textContent = "Hide Answer Distribution";
+  } else {
+    chartContainer.style.display = "none";
+    button.textContent = "Show Answer Distribution";
+  }
+}
+
+
+function displayAnswerChart(answerStats, correctIndex) {
+  // Store for later redraw
+  window.lastAnswerStats = answerStats;
+  window.lastCorrectIndex = correctIndex;
+  
+  var chartContainer = el("answerChart");
+  if (!chartContainer) return;
+  
+  var colors = ["#3b82f6", "#f59e0b", "#10b981", "#8b5cf6", "#ec4899", "#06b6d4"];
+  var labels = ["A", "B", "C", "D", "E", "F"];
+  
+  if (!Array.isArray(answerStats) || answerStats.length === 0) {
+    answerStats = [4, 2, 1, 3, 0, 0];
+  }
+  
+  if (!correctIndex && correctIndex !== 0) {
+    correctIndex = 0;
+  }
+  
+  var totalResponses = 0;
+  for (var i = 0; i < answerStats.length; i++) {
+    totalResponses += answerStats[i] || 0;
+  }
+  
+  if (totalResponses === 0) {
+    chartContainer.innerHTML = "<div style='text-align:center;color:#9ca3af;padding:20px;font-size:12px;'>No responses yet</div>";
+    return;
+  }
+  
+  var html = "<div style='display:flex;gap:12px;align-items:flex-end;justify-content:center;height:240px;margin:16px 0;padding:20px;background:#0b1220;border-radius:8px;'>";
+  
+  for (var i = 0; i < answerStats.length; i++) {
+    var count = answerStats[i] || 0;
+    var percent = totalResponses > 0 ? Math.round((count / totalResponses) * 100) : 0;
+    var height = totalResponses > 0 ? (count / totalResponses) * 160 : 0;
+    var isCorrect = i === correctIndex;
+    
+    html += "<div style='display:flex;flex-direction:column;align-items:center;gap:8px;flex:1;max-width:70px;'>";
+    
+    // Only show checkmark if teacher has revealed the answer
+    if (isCorrect && state.showCorrectAnswer) {
+      html += "<span style='font-size:28px;height:32px;'>✅</span>";
+    } else {
+      html += "<span style='height:32px;'></span>";
+    }
+    
+    html += "<div style='position:relative;height:160px;width:100%;background:#1e293b;border-radius:6px;display:flex;align-items:flex-end;justify-content:center;border:1px solid #334155;'>";
+    
+    if (height > 0) {
+      html += "<div style='height:" + height + "px;width:100%;background:" + colors[i % colors.length] + ";border-radius:4px;display:flex;align-items:center;justify-content:center;transition:all 0.3s;'>";
+      if (height > 25) {
+        html += "<span style='color:#fff;font-weight:700;font-size:11px;text-align:center;'>" + count + "</span>";
+      }
+      html += "</div>";
+    }
+    
+    html += "</div>";
+    
+    html += "<div style='text-align:center;width:100%;'>";
+    html += "<div style='color:#e5e7eb;font-weight:700;font-size:14px;margin-bottom:4px;'>" + labels[i] + "</div>";
+    html += "<div style='color:#9ca3af;font-size:11px;'>" + count + "<br/>(" + percent + "%)</div>";
+    html += "</div>";
+    
+    html += "</div>";
+  }
+  
+  html += "</div>";
+  chartContainer.innerHTML = html;
+}
+
+// NEW: Function to reveal/show the correct answer
+function revealAnswer() {
+  state.showCorrectAnswer = true;
+  var button = document.querySelector("button[onclick='qc.revealAnswer()']");
+  if (button) {
+    button.textContent = "Answer Revealed ✓";
+    button.disabled = true;
+  }
+  
+  // IMPORTANT: Redraw the chart to show the checkmark
+  var chartContainer = el("answerChart");
+  if (chartContainer && chartContainer.style.display !== "none") {
+    // Redraw with stored stats
+    if (window.lastAnswerStats && window.lastCorrectIndex !== undefined) {
+      displayAnswerChart(window.lastAnswerStats, window.lastCorrectIndex);
+    }
+  }
+  
+  toast("Correct answer revealed!");
+}
+// Reset showCorrectAnswer when moving to next question
+function nextQuestion() {
+  if (!state.currentSession) {
+    toast("No active session", "error");
+    return;
+  }
+  
+  state.currentQuestionIndex++;
+  state.showCorrectAnswer = false;  // RESET for new question
+  
+  if (state.currentQuestionIndex >= state.questions.length) {
+    toast("No more questions", "error");
+    state.currentQuestionIndex = state.questions.length - 1;
+    return;
+  }
+  
+  var question = state.questions[state.currentQuestionIndex];
+  
+  apiCall("/api/sessions/" + state.currentSession.id + "/next", {
+    method: "POST",
+    body: { questionId: question.question_id }
+  }).then(function () {
+    el("currentQuestion").textContent = "Q" + (state.currentQuestionIndex + 1) + ": " + 
+      (question.question_content || question.title || "");
+    el("btnLock").disabled = false;
+    
+    // Reset reveal answer button
+    var revealBtn = document.querySelector("button[onclick='qc.revealAnswer()']");
+    if (revealBtn) {
+      revealBtn.textContent = "Reveal Answer";
+      revealBtn.disabled = false;
+    }
+    
+    toast("Question " + (state.currentQuestionIndex + 1) + " opened");
+  }).catch(function (err) {
+    toast(err.message || "Failed to open question", "error");
+  });
 }
 
 function updateLeaderboard(leaderboard) {
@@ -516,34 +751,6 @@ function updateLeaderboard(leaderboard) {
   list.innerHTML = html;
 }
 
-function nextQuestion() {
-  if (!state.currentSession) {
-    toast("No active session", "error");
-    return;
-  }
-  
-  state.currentQuestionIndex++;
-  
-  if (state.currentQuestionIndex >= state.questions.length) {
-    toast("No more questions", "error");
-    state.currentQuestionIndex = state.questions.length - 1;
-    return;
-  }
-  
-  var question = state.questions[state.currentQuestionIndex];
-  
-  apiCall("/api/sessions/" + state.currentSession.id + "/next", {
-    method: "POST",
-    body: { questionId: question.question_id }
-  }).then(function () {
-    el("currentQuestion").textContent = "Q" + (state.currentQuestionIndex + 1) + ": " + 
-      (question.question_content || question.title || "");
-    el("btnLock").disabled = false;
-    toast("Question " + (state.currentQuestionIndex + 1) + " opened");
-  }).catch(function (err) {
-    toast(err.message || "Failed to open question", "error");
-  });
-}
 
 function lockQuestion() {
   if (!state.currentSession || state.currentQuestionIndex < 0) {
@@ -698,9 +905,10 @@ window.qc = {
   endSession: endSession,
   insertQR: insertQR,
   viewSummary: viewSummary,
-  exportCSV: exportCSV
+  exportCSV: exportCSV,
+  toggleChart: toggleChart,
+  revealAnswer: revealAnswer
 };
-
 // ============================================================================
 // Initialization
 // ============================================================================

@@ -103,7 +103,6 @@
 
       <div class="card">
         <h4 style="margin:0 0 8px">Questions in Quiz</h4>
-        <button class="sec" onclick="qc.syncQuestions()">Sync from Slides</button>
         <div id="questionsList" style="max-height:200px;overflow:auto;font-size:12px;margin-top:8px"></div>
       </div>
     </div>
@@ -124,7 +123,6 @@
           <div class="qr-container">
             <img id="qrImage" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="QR Code" style="display:none">
           </div>
-          <button class="sec" onclick="qc.insertQR()">Insert QR to Slide</button>
           <button class="danger" onclick="qc.endSession()">End Quiz</button>
         </div>
 
@@ -133,23 +131,26 @@
           <div class="participant-list" id="participantList"></div>
         </div>
 
-        <div class="card">
-          <h4 style="margin:0 0 8px">Question Control</h4>
-          <button onclick="qc.nextQuestion()" id="btnNext">Next Question</button>
-          <button class="sec" onclick="qc.lockQuestion()" id="btnLock" disabled>Lock Question</button>
-          <div style="margin-top:8px">
-            <small>Current: <span id="currentQuestion">None</span></small>
-          </div>
-        </div>
+<div class="card">
+  <h4 style="margin:0 0 8px">Question Control</h4>
+  <button onclick="qc.nextQuestion()" id="btnNext">Next Question</button>
+  <button class="sec" onclick="qc.revealAnswer()" id="btnReveal">Reveal Answer</button>
+  <button class="sec" onclick="qc.lockQuestion()" id="btnLock" disabled>Lock Question</button>
+  <div style="margin-top:8px">
+    <small>Current: <span id="currentQuestion">None</span></small>
+  </div>
+</div>
 
-        <div class="card">
-          <h4 style="margin:0 0 8px">Live Stats</h4>
-          <div>Responses: <strong id="responseCount">0</strong></div>
-          <div>Correct: <strong id="correctCount">0</strong> (<span id="correctPercent">0</span>%)</div>
-          <div class="stats-bar">
-            <div class="stats-fill" id="statsFill" style="width:0%"></div>
-          </div>
-        </div>
+<div class="card">
+  <h4 style="margin:0 0 8px">Live Stats</h4>
+  <div>Responses: <strong id="responseCount">0</strong></div>
+  <div>Correct: <strong id="correctCount">0</strong> (<span id="correctPercent">0</span>%)</div>
+  <div class="stats-bar">
+    <div class="stats-fill" id="statsFill" style="width:0%"></div>
+  </div>
+  <button class="sec" onclick="qc.toggleChart()" style="margin-top:12px;width:100%">Show Answer Distribution</button>
+  <div id="answerChart" style="display:none;"></div>
+</div>
 
         <div class="card">
           <h4 style="margin:0 0 8px">Leaderboard (Top 10)</h4>
