@@ -93,3 +93,48 @@ class Response:
                 WHERE sa.class_id = %s AND sa.question_id = %s
             """, (class_id, question_id))
             return cursor.fetchone()
+        
+    @staticmethod
+    def get_answer_distribution(class_id, question_id):
+        """Get distribution of answers for a question (count per option)."""
+        with db.get_cursor() as cursor:
+            # Get all answers for this question ordered by display_order
+            cursor.execute("""
+                SELECT answer_id, answer_content, is_correct, display_order
+                FROM answers
+                WHERE question_id = %s
+                ORDER BY display_order
+            """, (question_id,))
+            answers = cursor.fetchall()
+            
+            if not answers:
+                return None, None
+            
+            # Get the correct answer index
+            correct_index = None
+            for idx, answer in enumerate(answers):
+                if answer['is_correct']:
+                    correct_index = idx
+                    break
+            
+            # Count responses for each answer
+            answer_stats = [0] * len(answers)
+            
+            cursor.execute("""
+                SELECT sa.answer_id, COUNT(*) as count
+                FROM students_answers sa
+                WHERE sa.class_id = %s AND sa.question_id = %s
+                GROUP BY sa.answer_id
+            """, (class_id, question_id))
+            
+            response_counts = cursor.fetchall()
+            
+            # Map answer_ids to their counts
+            for row in response_counts:
+                # Find the index of this answer
+                for idx, answer in enumerate(answers):
+                    if answer['answer_id'] == row['answer_id']:
+                        answer_stats[idx] = row['count']
+                        break
+            
+            return answer_stats, correct_index

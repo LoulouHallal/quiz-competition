@@ -470,7 +470,7 @@ def submit_answer(session_id):
     
     # Save response
     Response.create(user_id, session_id, question_id, answer['answer_id'], latency_ms, points)
-    
+    answer_stats, correct_index = Response.get_answer_distribution(session_id, question_id)
     # Broadcast stats update to teacher
     stats = Response.get_question_stats(session_id, question_id)
     leaderboard = ScoringService.get_leaderboard(session_id)
@@ -479,7 +479,9 @@ def submit_answer(session_id):
         'questionId': question_id,
         'totalResponses': stats['total_responses'],
         'correctCount': stats['correct_count'],
-        'leaderboard': leaderboard[:10]  # Top 10
+        'answerStats': answer_stats,        # NEW: Answer distribution [count_A, count_B, count_C, ...]
+        'correctIndex': correct_index,      # NEW: Correct answer index (0-5)
+        'leaderboard': leaderboard[:10]     # Top 10
     }, room=f"session:{session['class_code']}")
     
     return jsonify({
