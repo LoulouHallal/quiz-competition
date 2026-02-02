@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file, render_template, session
+from flask import Flask, request, jsonify, send_file, render_template, session, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
@@ -6,7 +6,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import os
 import json
 from datetime import datetime, timedelta
-
+import re
 from config import Config
 from models.user import User
 from models.quiz import Quiz
@@ -16,9 +16,10 @@ from models.participant import Participant
 from models.response import Response
 from services.scoring import ScoringService
 from services.qr_generator import QRGenerator
+from models.database import db
 
 # Initialize Flask app
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static', template_folder='templates')
 app.config.from_object(Config)
 Config.init_app(app)
 
@@ -35,7 +36,11 @@ login_manager.login_view = 'login'
 
 # Active sessions tracking (in-memory for real-time state)
 active_sessions = {}  # {session_code: {question_start_time, current_question_id, participants: set()}}
-
+def slugify(s):
+    s = (s or '').strip().lower()
+    s = re.sub(r'\s+', '_', s)
+    s = re.sub(r'[^a-z0-9_\-]', '', s)
+    return s[:50]
 @login_manager.user_loader
 def load_user(user_id):
     return User.get_by_id(int(user_id))
@@ -387,12 +392,11 @@ def export_session_csv(session_id):
 # ============================================================================
 # Student Join Routes (Public)
 # ============================================================================
-
 @app.route('/api/join', methods=['POST'])
 def join_session():
     """Student joins a session."""
     data = request.get_json()
-    code = data.get('code')
+    code = (data.get('code') or '').strip().upper()
     name = data.get('name')
     
     if not code or not name:
@@ -406,31 +410,87 @@ def join_session():
     if session['status'] == 'ended':
         return jsonify({'error': 'Session has ended'}), 400
     
-    # Create temporary user for student (or find existing)
-    # For MVP, create ephemeral users
-    user = User.get_by_email(f"student_{code}_{name}@temp.local")
-    if not user:
-        user_id = User.create_user(name, '', f"student_{code}_{name}@temp.local", role_id=1)
-    else:
-        user_id = user.id
+    # Create temporary user for student
+    user_id = None
+    try:
+        user = User.get_by_email(f"student_{code}_{name}@temp.local")
+        if user:
+            user_id = user.id
+        else:
+            user_id = User.create_user(name, '', f"student_{code}_{name}@temp.local", role_id=1)
+    except Exception as e:
+        print(f"Error creating/finding user: {e}")
     
     # Add participant
-    participant_id = Participant.create(session['class_id'], user_id, name)
-    
-    # Broadcast new participant to teacher
-    socketio.emit('lobby_update', {
-        'participantId': participant_id,
-        'name': name,
-        'joinedAt': datetime.now().isoformat()
-    }, room=f"session:{code}")
-    
-    return jsonify({
-        'sessionId': session['class_id'],
-        'participantId': participant_id,
-        'userId': user_id,
-        'code': code,
-        'status': session['status']
-    })
+    try:
+        participant_id = Participant.create(session['class_id'], user_id, name)
+        
+        # Include timestamp in the participant data
+        current_time = datetime.now().strftime("%H:%M:%S")
+        
+        participant_data = {
+            'participantId': participant_id,
+            'name': name,
+            'joinedAt': current_time,
+            'userId': user_id
+        }
+        
+        print(f"DEBUG: Student {name} joined session {code}, participant_id: {participant_id}, user_id: {user_id}")
+        
+        # CRITICAL: Ensure active_sessions has the session and pending_joins
+        if code not in active_sessions:
+            print(f"DEBUG: Creating active_sessions entry for {code}")
+            active_sessions[code] = {
+                'session_id': session['class_id'],
+                'current_question_id': None,
+                'question_start_time': None,
+                'participants': set(),
+                'pending_joins': []
+            }
+        
+        # Initialize pending_joins if it doesn't exist
+        if 'pending_joins' not in active_sessions[code]:
+            print(f"DEBUG: Initializing pending_joins for {code}")
+            active_sessions[code]['pending_joins'] = []
+        
+        # Add to pending joins
+        active_sessions[code]['pending_joins'].append(participant_data)
+        print(f"DEBUG: Added to pending_joins for session {code}. Now has {len(active_sessions[code]['pending_joins'])} pending joins")
+        
+        # Debug: show current pending joins
+        for i, pending in enumerate(active_sessions[code]['pending_joins']):
+            print(f"DEBUG: Pending {i}: name={pending['name']}, userId={pending['userId']}")
+        
+        # Emit immediately to the room
+        room = f"session:{code}"
+        print(f"DEBUG: Attempting immediate emit to room {room}")
+        
+        # Get current clients in room for debugging
+        try:
+            manager = socketio.server.manager
+            clients_in_room = manager.rooms.get('/', {}).get(room, set())
+            print(f"DEBUG: Currently {len(clients_in_room)} clients in room {room}")
+            if clients_in_room:
+                print(f"DEBUG: Clients in room: {list(clients_in_room)}")
+        except Exception as e:
+            print(f"DEBUG: Could not get room clients: {e}")
+        
+        socketio.emit('lobby_update', participant_data, room=room, namespace='/')
+        print(f"DEBUG: Immediate emit completed for {name}")
+        
+        return jsonify({
+            'sessionId': session['class_id'],
+            'participantId': participant_id,
+            'userId': user_id,
+            'code': code,
+            'status': session['status']
+        })
+        
+    except Exception as e:
+        print(f"Error in join_session: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/sessions/<int:session_id>/answer', methods=['POST'])
 def submit_answer(session_id):
@@ -490,6 +550,385 @@ def submit_answer(session_id):
         'points': points
     })
 
+# Replace these two endpoints in app.py
+
+@app.route('/api/quizzes/<int:quiz_id>/students', methods=['POST'])
+def add_students_for_quiz(quiz_id):
+    """
+    Create/update students for a quiz.
+    Stores students with synthetic email: student_{quiz_id}_{slug(name)}@students.local
+    """
+    data = request.get_json() or {}
+    students = data.get('students') or []
+    
+    if not isinstance(students, list):
+        return jsonify({"error": "students must be an array"}), 400
+
+    results = []
+    created = 0
+    
+    for s in students:
+        name = (s.get('name') or '').strip()
+        password = (s.get('password') or '').strip()
+        
+        if not name or not password:
+            results.append({
+                "name": name, 
+                "email": None, 
+                "action": "skipped", 
+                "reason": "missing name or password"
+            })
+            continue
+
+        slug = slugify(name)
+        email = f"student_{quiz_id}_{slug}@students.local"
+        
+        print(f"DEBUG: Processing student: {name} -> {email}")
+        
+        try:
+            # Check if user already exists
+            existing_user = User.get_by_email(email)
+            
+            if existing_user:
+                # Update existing user's password
+                print(f"DEBUG: Updating password for existing user {email}")
+                if existing_user.set_password(password):
+                    results.append({
+                        "name": name,
+                        "email": email,
+                        "action": "updated"
+                    })
+                    created += 1
+                else:
+                    results.append({
+                        "name": name,
+                        "email": email,
+                        "action": "error",
+                        "error": "Failed to update password"
+                    })
+            else:
+                # Create new user
+                # Split name into first and last (simple approach)
+                parts = name.split(' ', 1)
+                fname = parts[0]
+                lname = parts[1] if len(parts) > 1 else ""
+                
+                print(f"DEBUG: Creating new user {fname} {lname} ({email})")
+                user_id = User.create_user(fname, lname, email, password=password, role_id=1)
+                
+                if user_id:
+                    print(f"DEBUG: User created successfully, id={user_id}")
+                    results.append({
+                        "name": name,
+                        "email": email,
+                        "user_id": user_id,
+                        "action": "created"
+                    })
+                    created += 1
+                else:
+                    print(f"ERROR: Failed to create user {email}")
+                    results.append({
+                        "name": name,
+                        "email": email,
+                        "action": "error",
+                        "error": "Failed to create user"
+                    })
+                    
+        except Exception as e:
+            print(f"ERROR: Exception processing student {name}: {e}")
+            import traceback
+            traceback.print_exc()
+            results.append({
+                "name": name,
+                "email": email,
+                "action": "error",
+                "error": str(e)
+            })
+
+    print(f"DEBUG: add_students_for_quiz completed: {created} students processed")
+    return jsonify({
+        "ok": True,
+        "count": created,
+        "results": results
+    }), 201
+
+
+# @app.route('/api/sessions/join', methods=['POST'])
+# def validate_join():
+#     """
+#     Validate student joining by session code + name + password.
+#     """
+#     body = request.get_json() or {}
+#     code = (body.get('code') or '').strip().upper()
+#     name = (body.get('name') or '').strip()
+#     password = (body.get('password') or '').strip()
+    
+#     if not code or not name or not password:
+#         return jsonify({"error": "code, name and password required"}), 400
+
+#     print(f"DEBUG: Student join attempt - code={code}, name={name}")
+
+#     # Step 1: Find session by code
+#     try:
+#         session_record = Session.get_by_code(code)
+#     except Exception as e:
+#         print(f"ERROR: Session.get_by_code({code}): {e}")
+#         return jsonify({"error": "Invalid session code"}), 404
+
+#     if not session_record:
+#         print(f"WARNING: No session found for code {code}")
+#         return jsonify({"error": "Invalid session code"}), 404
+
+#     # Step 2: Extract session info
+#     def safe_get(obj, *keys):
+#         if isinstance(obj, dict):
+#             for k in keys:
+#                 if k in obj:
+#                     return obj[k]
+#         else:
+#             for k in keys:
+#                 if hasattr(obj, k):
+#                     return getattr(obj, k, None)
+#         return None
+
+#     session_id = safe_get(session_record, 'class_id', 'id')
+#     quiz_id = safe_get(session_record, 'course_id', 'quiz_id')
+
+#     if not session_id or not quiz_id:
+#         print(f"ERROR: Missing session_id={session_id} or quiz_id={quiz_id}")
+#         return jsonify({"error": "Session configuration error"}), 500
+
+#     # Step 3: Find user by synthetic email
+#     email = f"student_{quiz_id}_{slugify(name)}@students.local"
+#     print(f"DEBUG: Looking for user with email={email}")
+
+#     user = User.get_by_email(email)
+
+#     if not user:
+#         print(f"ERROR: User not found for {email}")
+#         return jsonify({"error": "Invalid name or password"}), 401
+
+#     print(f"DEBUG: User found: {user.user_fname} {user.user_lname}")
+
+#     # Step 4: Verify password
+#     if not user.verify_password(password):
+#         print(f"WARNING: Password verification failed for {email}")
+#         return jsonify({"error": "Invalid name or password"}), 401
+
+#     print(f"DEBUG: Password verified successfully")
+
+#     # Step 5: Create participant entry
+#     participant_id = None
+#     try:
+#         participant_id = Participant.create(session_id, user.id, name)
+#         print(f"DEBUG: Participant created, id={participant_id}")
+#     except Exception as e:
+#         print(f"DEBUG: Participant.create error (may already exist): {e}")
+#         # Try to find existing
+#         try:
+#             existing = Participant.get_by_session_and_user(session_id, user.id)
+#             if existing:
+#                 participant_id = safe_get(existing, 'id', 'participant_id')
+#                 print(f"DEBUG: Found existing participant, id={participant_id}")
+#         except Exception as e2:
+#             print(f"WARNING: Could not find existing participant: {e2}")
+
+#     print(f"SUCCESS: Student {name} authenticated and joined session {code}")
+
+#     return jsonify({
+#         "ok": True,
+#         "sessionId": session_id,
+#         "session_id": session_id,
+#         "userId": user.id,
+#         "user_id": user.id,
+#         "participantId": participant_id,
+#         "name": f"{user.user_fname} {user.user_lname}"
+#     }), 200
+
+@app.route('/api/quizzes/<int:quiz_id>/students/debug', methods=['GET'])
+def debug_students_for_quiz(quiz_id):
+    """
+    Debug endpoint: list users created with the synthetic student email prefix.
+    """
+    prefix = f"student_{quiz_id}_%"
+    try:
+        rows = db.session.execute(
+            "SELECT id, name, email FROM users WHERE email LIKE :p ORDER BY id",
+            {"p": prefix}
+        ).fetchall()
+        out = []
+        for r in rows:
+            # SQLAlchemy RowProxy/Row has ._mapping on newer versions
+            if hasattr(r, '_mapping'):
+                m = r._mapping
+                out.append({"id": m.get('id'), "name": m.get('name'), "email": m.get('email')})
+            else:
+                out.append({"id": r[0], "name": r[1], "email": r[2]})
+        return jsonify(out), 200
+    except Exception as e:
+        print("DEBUG: debug_students_for_quiz error:", e)
+        return jsonify({"error": "debug failed", "detail": str(e)}), 500
+# ...existing code...
+@app.route('/api/quizzes/<int:quiz_id>/students', methods=['GET'])
+def get_students_for_quiz(quiz_id):
+    """
+    Return student list for a quiz (without password hashes).
+    """
+    try:
+        # Use direct database connection instead of SQLAlchemy session
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT u.user_id, u.user_fname, u.user_lname, u.user_email 
+                FROM app_user u 
+                WHERE u.user_email LIKE %s
+                ORDER BY u.user_fname, u.user_lname
+            """, [f"student_{quiz_id}_%@students.local"])
+            
+            students = cursor.fetchall()
+            
+            out = []
+            for student in students:
+                # Access results by index since we're using raw cursor
+                out.append({
+                    "id": student[0],  # user_id
+                    "name": f"{student[1] or ''} {student[2] or ''}".strip(),  # fname + lname
+                    "email": student[3]  # user_email
+                })
+
+            return jsonify({
+                "ok": True,
+                "students": out,
+                "count": len(out)
+            }), 200
+
+    except Exception as e:
+        print(f"ERROR in get_students_for_quiz: {str(e)}")
+        return jsonify({
+            "error": "Failed to fetch students",
+            "detail": str(e)
+        }), 500
+    
+@app.route('/api/sessions/join', methods=['POST'])
+def validate_join():
+    """
+    Validate student joining by session code + name + password.
+    Includes extensive debugging output.
+    """
+    body = request.get_json() or {}
+    code = (body.get('code') or '').strip().upper()
+    name = (body.get('name') or '').strip()
+    password = (body.get('password') or '').strip()
+    
+    if not code or not name or not password:
+        return jsonify({"error": "code, name and password required"}), 400
+
+    # Find session
+    session_record = None
+    try:
+        session_record = Session.get_by_code(code)
+    except Exception as e:
+        print(f"ERROR: Session.get_by_code({code}) raised: {e}")
+        return jsonify({"error": "Invalid session code"}), 404
+
+    if not session_record:
+        print(f"WARNING: No session found for code {code}")
+        return jsonify({"error": "Invalid session code"}), 404
+
+    # Extract IDs from session record
+    def extract_value(obj, *keys):
+        if isinstance(obj, dict):
+            for k in keys:
+                if k in obj:
+                    return obj[k]
+        else:
+            for k in keys:
+                if hasattr(obj, k):
+                    return getattr(obj, k, None)
+        return None
+
+    session_id = extract_value(session_record, 'class_id', 'id')
+    quiz_id = extract_value(session_record, 'course_id', 'quiz_id')
+
+    if not session_id or not quiz_id:
+        print(f"ERROR: session_id={session_id}, quiz_id={quiz_id} - session record: {session_record}")
+        return jsonify({"error": "Session configuration error"}), 500
+
+    # Build synthetic email
+    email = f"student_{quiz_id}_{slugify(name)}@students.local"
+    print(f"DEBUG: Looking for user email={email}")
+
+    # Find user
+    user = None
+    try:
+        user = User.get_by_email(email)
+    except Exception as e:
+        print(f"ERROR: User.get_by_email({email}): {e}")
+
+    if not user:
+        print(f"DEBUG: User not found. Listing all students for quiz {quiz_id}:")
+        try:
+            rows = db.session.execute(
+                "SELECT user_id, user_fname, user_lname, user_email, user_password FROM app_user WHERE user_email LIKE :p LIMIT 20",
+                {"p": f"student_{quiz_id}_%"}
+            ).fetchall()
+            for row in rows:
+                print(f"  Found: {row}")
+        except Exception as e:
+            print(f"ERROR listing users: {e}")
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    # DEBUG: inspect returned user object/row
+    try:
+        print("DEBUG: user repr:", repr(user))
+        # robust user id extraction (support dict, SQLAlchemy Row, or User object)
+        if isinstance(user, dict):
+            user_id_val = user.get('user_id') or user.get('id') or user.get('userId')
+        else:
+            user_id_val = getattr(user, 'id', None) or getattr(user, 'user_id', None)
+        print(f"DEBUG: resolved user_id = {user_id_val}, email={getattr(user,'user_email',None) or (user.get('user_email') if isinstance(user, dict) else None)}")
+    except Exception as e:
+        print("DEBUG: error inspecting user:", e)
+        user_id_val = getattr(user, 'id', None) or getattr(user, 'user_id', None)
+
+    # Check password (existing logic)
+    stored_hash = getattr(user, 'user_password', None) or getattr(user, 'password', None)
+    if not stored_hash:
+        print(f"ERROR: User {user} has no password_hash field")
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    # Check password
+    stored_hash = getattr(user, 'user_password', None) or getattr(user, 'password', None)
+    if not stored_hash:
+        print(f"ERROR: User {user} has no password_hash field")
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    try:
+        if not check_password_hash(stored_hash, password):
+            print(f"WARNING: Password mismatch for {email}")
+            return jsonify({"error": "Invalid name or password"}), 401
+    except Exception as e:
+        print(f"ERROR: check_password_hash failed: {e}")
+        return jsonify({"error": "System error"}), 500
+
+    # Create participant
+    user_id = getattr(user, 'id', user.get('id') if isinstance(user, dict) else None)
+    participant_id = None
+
+    try:
+        participant_id = Participant.create(session_id, user_id, name)
+    except Exception as e:
+        print(f"ERROR: Participant.create({session_id}, {user_id}, {name}): {e}")
+
+    print(f"SUCCESS: Student {name} joined session {code} (participant_id={participant_id})")
+
+    return jsonify({
+        "ok": True,
+        "sessionId": session_id,
+        "userId": user_id,
+        "participantId": participant_id,
+        "name": name
+    }), 200
 # ============================================================================
 # WebSocket Events
 # ============================================================================
@@ -509,6 +948,9 @@ def handle_join_session(data):
     """Join a session room."""
     code = data.get('code')
     role = data.get('role', 'student')  # teacher or student
+    name = data.get('name')  # Student name
+    user_id = data.get('userId')  # Student user ID
+    participant_id = data.get('participantId')  # Student participant ID
     
     if not code:
         emit('error', {'message': 'Session code required'})
@@ -517,11 +959,104 @@ def handle_join_session(data):
     room = f"session:{code}"
     join_room(room)
     
+    print(f"DEBUG: Client {request.sid} joined room {room} as {role}")
+    
+    # If this is a student joining, get their participant data from database
+    if role == 'student':
+        print(f"DEBUG: Student joined - name: {name}, user_id: {user_id}, participant_id: {participant_id}")
+        
+        # Try to find the participant in database
+        participant_data = None
+        
+        # Method 1: Use participant_id if provided
+        if participant_id:
+            try:
+                participant = Participant.get_by_id(participant_id)
+                if participant:
+                    participant_data = {
+                        'participantId': participant['id'],
+                        'name': participant['name'],
+                        'joinedAt': participant['joined_at'].strftime("%H:%M:%S") if hasattr(participant['joined_at'], 'strftime') else str(participant['joined_at']),
+                        'userId': participant['user_id']
+                    }
+                    print(f"DEBUG: Found participant by ID: {participant_data}")
+            except Exception as e:
+                print(f"DEBUG: Error getting participant by ID: {e}")
+        
+        # Method 2: Use session and user_id
+        if not participant_data and user_id and code:
+            try:
+                session = Session.get_by_code(code)
+                if session:
+                    participants = Participant.get_by_session_and_user(session['class_id'], user_id)
+                    if participants:
+                        participant = participants[0]  # Take the first one
+                        participant_data = {
+                            'participantId': participant['id'],
+                            'name': participant['name'],
+                            'joinedAt': participant['joined_at'].strftime("%H:%M:%S") if hasattr(participant['joined_at'], 'strftime') else str(participant['joined_at']),
+                            'userId': participant['user_id']
+                        }
+                        print(f"DEBUG: Found participant by session/user: {participant_data}")
+            except Exception as e:
+                print(f"DEBUG: Error getting participant by session/user: {e}")
+        
+        # Method 3: Use name and session (fallback)
+        if not participant_data and name and code:
+            try:
+                session = Session.get_by_code(code)
+                if session:
+                    participants = Participant.get_by_session(session['class_id'])
+                    for participant in participants:
+                        if participant['name'] == name:
+                            participant_data = {
+                                'participantId': participant['id'],
+                                'name': participant['name'],
+                                'joinedAt': participant['joined_at'].strftime("%H:%M:%S") if hasattr(participant['joined_at'], 'strftime') else str(participant['joined_at']),
+                                'userId': participant['user_id']
+                            }
+                            print(f"DEBUG: Found participant by name: {participant_data}")
+                            break
+            except Exception as e:
+                print(f"DEBUG: Error getting participant by name: {e}")
+        
+        # Emit the participant data if found
+        if participant_data:
+            print(f"DEBUG: Emitting lobby_update for {participant_data['name']}")
+            socketio.emit('lobby_update', participant_data, room=room, namespace='/')
+        else:
+            print(f"DEBUG: Could not find participant data in database")
+            # Try pending joins as fallback
+            if code in active_sessions:
+                pending_joins = active_sessions[code].get('pending_joins', [])
+                print(f"DEBUG: Checking {len(pending_joins)} pending joins as fallback")
+                if pending_joins:
+                    print(f"DEBUG: Emitting first pending join: {pending_joins[0]['name']}")
+                    socketio.emit('lobby_update', pending_joins[0], room=room, namespace='/')
+                    pending_joins.pop(0)
+    
     if code in active_sessions:
         active_sessions[code]['participants'].add(request.sid)
     
     emit('joined', {'code': code, 'role': role})
-    print(f"Client {request.sid} joined session {code} as {role}")
+    print(f"DEBUG: Sent 'joined' event to client {request.sid}")
+
+@app.route('/api/debug/rooms/<session_code>')
+def debug_rooms(session_code):
+    """Debug which clients are in a room."""
+    room = f"session:{session_code}"
+    manager = socketio.server.manager
+    
+    try:
+        # Get clients in the room for the default namespace
+        clients = manager.rooms.get('/', {}).get(room, set())
+        return jsonify({
+            'room': room,
+            'client_count': len(clients),
+            'clients': list(clients)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @socketio.on('leave_session')
 def handle_leave_session(data):
