@@ -15,33 +15,59 @@ class Participant:
             return result['class_participant_id'] if result else None
     
     @staticmethod
+    def get_by_id(participant_id):
+        """Get participant by ID."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    cp.class_participant_id as id,
+                    cp.class_id,
+                    cp.user_id,
+                    cp.nickname as name,
+                    cp.joined_at,
+                    cp.is_kicked
+                FROM class_participant cp
+                JOIN app_user u ON u.user_id = cp.user_id
+                WHERE cp.class_participant_id = %s
+            """, (participant_id,))
+            return cursor.fetchone()
+
+    @staticmethod
+    def get_by_session_and_user(class_id, user_id):
+        """Get participant by session and user ID."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    cp.class_participant_id as id,
+                    cp.class_id,
+                    cp.user_id,
+                    cp.nickname as name,
+                    cp.joined_at,
+                    cp.is_kicked
+                FROM class_participant cp
+                JOIN app_user u ON u.user_id = cp.user_id 
+                WHERE cp.class_id = %s AND cp.user_id = %s AND cp.is_kicked = FALSE
+            """, (class_id, user_id))
+            return cursor.fetchone()  # Changed from fetchall() to fetchone()
+
+    @staticmethod
     def get_by_session(class_id):
         """Get all participants in a session."""
         with db.get_cursor() as cursor:
             cursor.execute("""
-                SELECT cp.class_participant_id, cp.user_id, cp.nickname, cp.joined_at, cp.is_kicked,
-                       u.user_fname, u.user_lname, u.user_email
+                SELECT 
+                    cp.class_participant_id as id,
+                    cp.class_id,
+                    cp.user_id,
+                    cp.nickname as name,
+                    cp.joined_at,
+                    cp.is_kicked
                 FROM class_participant cp
                 JOIN app_user u ON u.user_id = cp.user_id
                 WHERE cp.class_id = %s AND cp.is_kicked = FALSE
                 ORDER BY cp.joined_at
             """, (class_id,))
             return cursor.fetchall()
-    
-    @staticmethod
-    def get_by_id(participant_id):
-        """Get participant by ID."""
-        with db.get_cursor() as cursor:
-            cursor.execute("""
-                SELECT cp.class_participant_id, cp.class_id, cp.user_id, cp.nickname, 
-                       cp.joined_at, cp.is_kicked,
-                       u.user_fname, u.user_lname, u.user_email
-                FROM class_participant cp
-                JOIN app_user u ON u.user_id = cp.user_id
-                WHERE cp.class_participant_id = %s
-            """, (participant_id,))
-            return cursor.fetchone()
-    
     @staticmethod
     def kick(participant_id):
         """Kick a participant from the session."""

@@ -262,7 +262,7 @@
         <!-- Join Screen -->
         <div id="joinScreen" class="screen active">
             <h1>🎯 Quiz Competition</h1>
-            <p class="subtitle">Enter the code to join</p>
+            <p class="subtitle">Enter the code and password to join</p>
             
             <div id="joinError" class="error"></div>
             
@@ -275,6 +275,11 @@
                 <div class="form-group">
                     <label for="name">Your Name</label>
                     <input type="text" id="name" placeholder="Enter your name" maxlength="50" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Password (provided by teacher)</label>
+                    <input type="password" id="password" placeholder="Enter password" maxlength="50" required>
                 </div>
                 
                 <button type="submit" id="joinBtn">Join Quiz</button>
@@ -380,84 +385,132 @@
             errorEl.classList.add('show');
         }
         
-        // Join form submit
-        document.getElementById('joinForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const code = document.getElementById('code').value.trim();
-            const name = document.getElementById('name').value.trim();
-            
-            if (!code || !name) {
-                showError('Please enter both code and name');
-                return;
-            }
-            
-            try {
-                const response = await fetch(`${API_BASE}/api/join`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({code, name})
-                });
-                
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    showError(data.error || 'Failed to join session');
-                    return;
-                }
-                
-                sessionData = data;
-                sessionData.name = name;
-                
-                // Connect to WebSocket
-                connectSocket(code);
-                
-                // Show lobby
-                document.getElementById('participantName').textContent = name;
-                showScreen('lobbyScreen');
-                
-            } catch (error) {
-                showError('Connection error. Please try again.');
-                console.error(error);
-            }
+// Join form submit
+document.getElementById('joinForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const code = document.getElementById('code').value.trim();
+    const name = document.getElementById('name').value.trim();
+    const password = document.getElementById('password').value.trim();
+    
+    if (!code || !name || !password) {
+        showError('Please enter code, name and password');
+        return;
+    }
+    
+    const joinBtn = document.getElementById('joinBtn');
+    joinBtn.disabled = true;
+    joinBtn.textContent = 'Joining...';
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/sessions/join`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({code, name, password}),
+            credentials: 'include'
         });
         
-        // Connect to Socket.IO
-        function connectSocket(code) {
-            socket = io(API_BASE);
-            
-            socket.on('connect', () => {
-                console.log('Connected to server');
-                socket.emit('join_session', {code, role: 'student'});
-            });
-            
-            socket.on('joined', (data) => {
-                console.log('Joined session:', data);
-            });
-            
-            socket.on('question_open', (data) => {
-                console.log('Question opened:', data);
-                currentQuestion = data;
-                questionStartTime = new Date(data.startTime);
-                selectedOption = null;
-                showQuestion(data);
-            });
-            
-            socket.on('question_close', (data) => {
-                console.log('Question closed:', data);
-                stopTimer();
-            });
-            
-            socket.on('quiz_end', (data) => {
-                console.log('Quiz ended:', data);
-                document.getElementById('finalScore').textContent = userScore;
-                showScreen('endScreen');
-            });
-            
-            socket.on('error', (data) => {
-                console.error('Socket error:', data);
-            });
+        const data = await response.json();
+        
+        if (!response.ok) {
+            showError(data.error || data.message || 'Failed to join session');
+            joinBtn.disabled = false;
+            joinBtn.textContent = 'Join Quiz';
+            return;
         }
+        
+        // SUCCESS: HTTP join completed first
+        console.log('HTTP join successful:', data);
+        
+        // server may return sessionId, userId, and other metadata
+        sessionData = {
+            sessionId: data.sessionId || data.session_id || data.session || null,
+            userId: data.userId || data.user_id || data.user || null,
+            participantId: data.participantId || data.participant_id,
+            name: name,
+            code: code,
+            raw: data
+        };
+        
+        console.log('Session data:', sessionData);
+        
+        // Now connect to WebSocket AFTER successful HTTP join
+        connectSocket(code, sessionData);
+        
+        // Show lobby
+        document.getElementById('participantName').textContent = name;
+        showScreen('lobbyScreen');
+        
+    } catch (error) {
+        showError('Connection error. Please try again.');
+        console.error(error);
+        joinBtn.disabled = false;
+        joinBtn.textContent = 'Join Quiz';
+    }
+});
+        
+        // Connect to Socket.IO
+        // Connect to Socket.IO
+function connectSocket(code, sessionData) {
+    // Small delay to ensure server has processed HTTP join
+    setTimeout(() => {
+        socket = io(API_BASE, { withCredentials: true });
+        
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            console.log('Sending WebSocket join with:', { 
+                code, 
+                name: sessionData.name, 
+                userId: sessionData.userId,
+                participantId: sessionData.participantId 
+            });
+            
+            // send validated identity to server; server should trust after /api/sessions/join
+            socket.emit('join_session', {
+                code,
+                role: 'student',
+                name: sessionData.name,
+                userId: sessionData.userId,
+                participantId: sessionData.participantId
+            });
+        });
+        
+        socket.on('joined', (data) => {
+            console.log('Joined session:', data);
+        });
+        
+        socket.on('lobby_update', (data) => {
+            console.log('Lobby update received (student):', data);
+        });
+        
+        socket.on('question_open', (data) => {
+            console.log('Question opened:', data);
+            currentQuestion = data;
+            questionStartTime = new Date(data.startTime);
+            selectedOption = null;
+            showQuestion(data);
+        });
+        
+        socket.on('question_close', (data) => {
+            console.log('Question closed:', data);
+            stopTimer();
+        });
+        
+        socket.on('quiz_end', (data) => {
+            console.log('Quiz ended:', data);
+            document.getElementById('finalScore').textContent = userScore;
+            showScreen('endScreen');
+        });
+        
+        socket.on('error', (data) => {
+            console.error('Socket error:', data);
+        });
+        
+        socket.on('connect_error', (error) => {
+            console.error('Socket connection error:', error);
+        });
+    }, 500); // 500ms delay to ensure HTTP join is processed
+}
         
         // Show question
         function showQuestion(data) {
@@ -506,7 +559,9 @@
             const latency = Date.now() - new Date(currentQuestion.startTime).getTime();
             
             try {
-                const response = await fetch(`${API_BASE}/api/sessions/${sessionData.sessionId}/answer`, {
+                const sessionId = sessionData.sessionId;
+                // post to server endpoint used by teacher UI; adjust path if your API differs
+                const response = await fetch(`${API_BASE}/api/sessions/${sessionId}/answer`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
@@ -514,17 +569,18 @@
                         questionId: currentQuestion.questionId,
                         optionIndex: selectedOption,
                         latencyMs: latency
-                    })
+                    }),
+                    credentials: 'include'
                 });
                 
                 const data = await response.json();
                 
                 if (data.accepted) {
-                    userScore += data.points;
+                    userScore += data.points || 0;
                     
                     // Show feedback
                     const feedbackText = data.isCorrect ? 
-                        `✅ Correct! +${data.points} point${data.points !== 1 ? 's' : ''}` :
+                        `✅ Correct! +${data.points || 0} point${(data.points || 0) !== 1 ? 's' : ''}` :
                         '❌ Incorrect';
                     
                     document.getElementById('feedbackText').innerHTML = 

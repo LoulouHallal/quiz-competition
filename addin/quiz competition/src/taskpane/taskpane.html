@@ -29,8 +29,28 @@
     .code-display{font-size:48px;font-weight:700;text-align:center;color:#22d3ee;padding:20px;background:#0b1220;border-radius:12px;margin:12px 0;letter-spacing:8px}
     .qr-container{text-align:center;margin:12px 0}
     .qr-container img{max-width:200px;border-radius:8px}
-    .participant-list{max-height:200px;overflow-y:auto;font-size:13px}
-    .participant-item{padding:8px;background:#0b1220;border-radius:6px;margin:4px 0;display:flex;justify-content:space-between;align-items:center}
+
+.participant-list {
+    max-height: 200px;
+    overflow-y: auto;
+    background: #0b1220;
+    border-radius: 8px;
+    padding: 8px;
+}
+
+.participant-item {
+    padding: 8px;
+    background: #1e293b;
+    border-radius: 6px;
+    margin: 4px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.participant-item small {
+    color: #9ca3af;
+}
     .leaderboard{max-height:300px;overflow-y:auto}
     .leaderboard-item{padding:8px;background:#0b1220;border-radius:6px;margin:4px 0;display:flex;justify-content:space-between;align-items:center}
     .rank{width:32px;height:32px;background:#22d3ee;color:#0b1220;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;margin-right:8px}
@@ -101,6 +121,40 @@
         <button onclick="qc.saveQuestion()">Save to Slide</button>
       </div>
 
+<div class="card">
+  <h4 style="margin:0 0 8px">Manage Students (teacher)</h4>
+  <label>Name</label>
+  <input type="text" id="studentName" placeholder="Student name">
+  <label>Password (share with student)</label>
+  <input type="password" id="studentPassword" placeholder="password">
+  <div style="display:flex;gap:8px">
+    <button onclick="qc.addStudent()">Add Student</button>
+    <button class="sec" onclick="
+      if (!state.currentQuiz) {
+        alert('Please create or select a quiz first');
+        return;
+      }
+      qc.saveStudentsToServer(state.currentQuiz.id);
+    ">Save to Quiz</button>
+  </div>
+  <div id="studentList" style="max-height:200px;overflow:auto;font-size:12px;margin-top:8px">
+    <small>No students added yet</small>
+  </div>
+  <small>
+    <strong>Workflow:</strong>
+    <br/>1. Add students with name + password
+    <br/>2. Create/Select a quiz
+    <br/>3. Click "Save to Quiz" to persist them
+    <br/>4. Students use name + password to join the session
+  </small>
+</div>
+
+<!-- Add this after the "Questions in Quiz" card -->
+<div class="card">
+  <h4 style="margin:0 0 8px">Students in Quiz</h4>
+  <div id="studentsList" style="max-height:200px;overflow:auto;font-size:12px;margin-top:8px"></div>
+</div>
+
       <div class="card">
         <h4 style="margin:0 0 8px">Questions in Quiz</h4>
         <div id="questionsList" style="max-height:200px;overflow:auto;font-size:12px;margin-top:8px"></div>
@@ -125,12 +179,10 @@
           </div>
           <button class="danger" onclick="qc.endSession()">End Quiz</button>
         </div>
-
-        <div class="card">
-          <h4 style="margin:0 0 8px">Participants (<span id="participantCount">0</span>)</h4>
-          <div class="participant-list" id="participantList"></div>
-        </div>
-
+    <div class="card">
+        <h4 style="margin:0 0 8px">Participants (<span id="participantCount">0</span>)</h4>
+        <div id="participantList" class="participant-list"></div>
+    </div>
 <div class="card">
   <h4 style="margin:0 0 8px">Question Control</h4>
   <button onclick="qc.nextQuestion()" id="btnNext">Next Question</button>

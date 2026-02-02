@@ -1,35 +1,5 @@
 # Quiz Competition - PowerPoint Add-in
 
-A lightweight PowerPoint add-in that enables teachers to run live MCQ quiz competitions directly from slides. Students join via class code or QR, with real-time leaderboards and comprehensive results.
-
-## Features
-
-### For Teachers (PowerPoint Add-in)
-- **Question Authoring**: Create MCQ questions with 2-6 options directly in PowerPoint
-- **Live Sessions**: Start quiz sessions with 6-digit codes and QR codes
-- **Real-time Monitoring**: Watch responses, correct answer rates, and live leaderboard
-- **Results Export**: View summary statistics and export results to CSV
-
-### For Students (Mobile Web)
-- **Easy Join**: Enter code or scan QR to join from any device
-- **Live Participation**: Answer questions with countdown timers
-- **Instant Feedback**: See if answers are correct immediately
-- **Score Tracking**: View personal score throughout the quiz
-
-## Tech Stack
-
-- **Frontend (Add-in)**: Office.js, vanilla JavaScript, Socket.IO client
-- **Backend**: Python Flask, Flask-SocketIO, PostgreSQL
-- **Real-time**: WebSocket (Socket.IO) with fallback to long-polling
-- **QR Generation**: Python qrcode library
-
-## Prerequisites
-
-- **Windows** with PowerPoint (Office 365 or 2019+)
-- **Python 3.8+**
-- **PostgreSQL 12+**
-- **Node.js 14+** (for add-in development)
-
 ## Setup Instructions
 
 ### 1. Database Setup
